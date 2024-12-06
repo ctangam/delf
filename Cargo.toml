@@ -1,0 +1,9 @@
+[package]
+name = "delf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+derive-try-from-primitive = "1.0.0"
+derive_more = { version = "1.0.0", features = ["full"] }
+nom = "7.1.3"
