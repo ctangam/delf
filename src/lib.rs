@@ -74,8 +74,32 @@ pub struct File {
     pub program_headers: Vec<ProgramHeader>,
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum GetStringError {
+    #[error("StrTab dynamic entry not found")]
+    StrTabNotFound,
+    #[error("StrTab segment not found")]
+    StrTabSegmentNotFound,
+    #[error("String not found")]
+    StringNotFound,
+}
+
 impl File {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
+
+    pub fn slice_at(&self, mem_addr: Addr) -> Option<&[u8]> {
+        self.segment_at(mem_addr).map(|seg| &seg.data[(mem_addr - seg.mem_range().start).into()..])
+    }
+
+    pub fn get_string(&self, offset: Addr) -> Result<String, GetStringError> {
+        use DynamicTag as DT;
+        use GetStringError as E;
+
+        let addr = self.dynamic_entry(DT::StrTab).ok_or(E::StrTabNotFound)?;
+        let slice = self.slice_at(addr + offset).ok_or(E::StrTabSegmentNotFound)?;
+        let string_slice = slice.split(|&c| c == 0).next().ok_or(E::StringNotFound)?;
+        Ok(String::from_utf8_lossy(string_slice).into())
+    }
 
     pub fn read_rela_entries(&self) -> Result<Vec<Rela>, ReadRelaError> {
         use DynamicTag as DT;
@@ -83,12 +107,14 @@ impl File {
 
         let addr = self.dynamic_entry(DT::Rela).ok_or(E::RelaNotFound)?;
         let len = self.dynamic_entry(DT::RelaSz).ok_or(E::RelaSzNotFound)?;
-        let seg = self.segment_at(addr).ok_or(E::RelaSegmentNotFound)?;
+        let ent = self.dynamic_entry(DT::RelaEnt).ok_or(E::RelaEntNotFound)?;
 
-        let i = &seg.data[(addr - seg.mem_range().start).into()..][..len.into()];
+        let i = self.slice_at(addr).ok_or(E::RelaSegmentNotFound)?;
+        let i = &i[..len.into()];
+        let n = (len.0 / ent.0) as usize;
 
-        use nom::multi::many0;
-        match many0(Rela::parse)(i) {
+        use nom::multi::many_m_n;
+        match many_m_n(n, n, Rela::parse)(i) {
             Ok((_, rela_entries)) => Ok(rela_entries),
             Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
                 let e = &err.errors[0];
@@ -103,14 +129,27 @@ impl File {
         self.program_headers.iter().find(|ph| ph.r#type == r#type)
     }
 
-    pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
+    pub fn dynamic_table(&self) -> Option<&[DynamicEntry]> {
         match self.segment_of_type(SegmentType::Dynamic) {
             Some(ProgramHeader {
                 contents: SegmentContents::Dynamic(entries),
                 ..
-            }) => entries.iter().find(|e| e.tag == tag).map(|e| e.addr),
+            }) => Some(entries),
             _ => None,
         }
+    }
+
+    pub fn dynamic_entries(&self, tag: DynamicTag) -> impl Iterator<Item = Addr> + '_ {
+        self.dynamic_table().unwrap_or_default().iter().filter(move |e| e.tag == tag).map(|e| e.addr)
+    }
+
+    pub fn dynamic_entry(&self, tag: DynamicTag) -> Option<Addr> {
+        self.dynamic_entries(tag).next()
+    }
+
+    pub fn dynamic_entry_strings(&self, tag: DynamicTag) -> impl Iterator<Item = String> + '_ {
+        self.dynamic_entries(tag)
+            .filter_map(move |addr| self.get_string(addr).ok())
     }
 
     pub fn segment_at(&self, addr: Addr) -> Option<&ProgramHeader> {
@@ -243,7 +282,7 @@ impl DynamicEntry {
     }
 }
 
-#[derive(Debug, TryFromPrimitive, PartialEq, Eq)]
+#[derive(Debug, TryFromPrimitive, PartialEq, Eq, Clone, Copy)]
 #[repr(u64)]
 pub enum DynamicTag {
     Null = 0,
@@ -294,13 +333,32 @@ impl_parse_for_enum!(DynamicTag, le_u64);
 
 #[derive(Debug, TryFromPrimitive, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-pub enum RelType {
+pub enum KnownRelType {
+    _64 = 1,
+    Copy = 5,
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
 }
 
-impl_parse_for_enum!(RelType, le_u32);
+impl_parse_for_enum!(KnownRelType, le_u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelType {
+    Known(KnownRelType),
+    Unknown(u32),
+}
+
+impl RelType {
+        pub fn parse(i: parse::Input) -> parse::Result<Self> {
+        use nom::{branch::alt, combinator::map, number::complete::le_u32};
+        // `alt` tries several parsers one by one, until one succeeds
+        alt((
+            map(KnownRelType::parse, Self::Known),
+            map(le_u32, Self::Unknown),
+        ))(i)
+    }
+}
 
 #[derive(Debug)]
 pub struct Rela {
@@ -335,6 +393,11 @@ pub enum ReadRelaError {
     RelaSegmentNotFound,
     #[error("Parsing error")]
     ParsingError(nom::error::VerboseErrorKind),
+
+    #[error("RelaEnt dynamic entry not found")]
+    RelaEntNotFound,
+    #[error("RelaSeg dynamic entry not found")]
+    RelaSegNotFound,
 }
 
 pub struct ProgramHeader {
