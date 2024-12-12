@@ -6,6 +6,16 @@ use derive_try_from_primitive::TryFromPrimitive;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
 pub struct Addr(pub u64);
 
+impl Addr {
+    pub unsafe fn as_ptr<T>(&self) -> *const T {
+        std::mem::transmute(self.0 as usize)
+    }
+
+    pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
+        std::mem::transmute(self.0 as usize)
+    }
+}
+
 impl fmt::Debug for Addr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:08x}", self.0)
