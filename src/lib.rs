@@ -126,6 +126,11 @@ pub enum ReadSymsError {
 impl File {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
 
+    pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
+        self.dynamic_entry(tag)
+            .ok_or(GetDynamicEntryError::NotFound(tag))
+    }
+
     pub fn section_starting_at(&self, addr: Addr) -> Option<&SectionHeader> {
         self.section_headers.iter().find(|sh| sh.addr == addr)
     }
@@ -176,23 +181,24 @@ impl File {
         use DynamicTag as DT;
         use ReadRelaError as E;
 
-        let addr = self.dynamic_entry(DT::Rela).ok_or(E::RelaNotFound)?;
-        let len = self.dynamic_entry(DT::RelaSz).ok_or(E::RelaSzNotFound)?;
-        let ent = self.dynamic_entry(DT::RelaEnt).ok_or(E::RelaEntNotFound)?;
+        match self.dynamic_entry(DT::Rela) {
+            None => Ok(vec![]),
+            Some(addr) => {
+                let len = self.get_dynamic_entry(DT::RelaSz)?;
+                
+                let i = self.slice_at(addr).ok_or(E::RelaSegmentNotFound)?;
+                let i = &i[..len.into()];
 
-        let i = self.slice_at(addr).ok_or(E::RelaSegmentNotFound)?;
-        let i = &i[..len.into()];
-        let n = (len.0 / ent.0) as usize;
-
-        use nom::multi::many_m_n;
-        match many_m_n(n, n, Rela::parse)(i) {
-            Ok((_, rela_entries)) => Ok(rela_entries),
-            Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
-                let e = &err.errors[0];
-                let (_input, error_kind) = e;
-                Err(E::ParsingError(error_kind.clone()))
+                let n: usize = len.0 as usize / Rela::SIZE;
+                use nom::multi::many_m_n;
+                match many_m_n(n, n, Rela::parse)(i) {
+                    Ok((_, rela_entries)) => Ok(rela_entries),
+                    Err(nom::Err::Failure(err)) | Err(nom::Err::Error(err)) => {
+                        Err(E::ParsingError(format!("{:?}", err)))
+                    }
+                    _ => unreachable!(),
+                }
             }
-            _ => unreachable!(),
         }
     }
 
@@ -451,6 +457,8 @@ pub struct Rela {
 }
 
 impl Rela {
+    const SIZE: usize = 24;
+
     pub fn parse(i: parse::Input) -> parse::Result<Self> {
         use nom::{combinator::map, number::complete::le_u32, sequence::tuple};
         map(
@@ -466,20 +474,19 @@ impl Rela {
 }
 
 #[derive(thiserror::Error, Debug)]
+pub enum GetDynamicEntryError {
+    #[error("Dynamic entry {0:?} not found")]
+    NotFound(DynamicTag),
+}
+
+#[derive(thiserror::Error, Debug)]
 pub enum ReadRelaError {
-    #[error("Rela dynamic entry not found")]
-    RelaNotFound,
-    #[error("RelaSz dynamic entry not found")]
-    RelaSzNotFound,
+    #[error("{0}")]
+    DynamicEntryNotFound(#[from] GetDynamicEntryError),
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
     #[error("Parsing error")]
-    ParsingError(parse::ErrorKind),
-
-    #[error("RelaEnt dynamic entry not found")]
-    RelaEntNotFound,
-    #[error("RelaSeg dynamic entry not found")]
-    RelaSegNotFound,
+    ParsingError(String),
 }
 
 #[derive(Debug, TryFromPrimitive, Clone, Copy)]
@@ -490,12 +497,7 @@ pub enum SymBind {
     Weak = 2,
 }
 
-impl SymBind {
-    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
-        use nom::{bits::complete::take, combinator::map};
-        map(take(4_usize), |i: u8| Self::try_from(i).ok())(i)
-    }
-}
+impl_parse_for_bitenum!(SymBind, 4_usize);
 
 #[derive(Debug, TryFromPrimitive, Clone, Copy)]
 #[repr(u8)]
@@ -506,12 +508,7 @@ pub enum SymType {
     Section = 3,
 }
 
-impl SymType {
-    pub fn parse(i: parse::BitInput) -> parse::BitResult<Option<Self>> {
-        use nom::{bits::complete::take, combinator::map};
-        map(take(4_usize), |i: u8| Self::try_from(i).ok())(i)
-    }
-}
+impl_parse_for_bitenum!(SymType, 4_usize);
 
 #[derive(Clone, Copy)]
 pub struct SectionIndex(pub u16);
@@ -549,8 +546,8 @@ impl fmt::Debug for SectionIndex {
 #[derive(Debug)]
 pub struct Sym {
     pub name: Addr,
-    pub bind: Option<SymBind>,
-    pub r#type: Option<SymType>,
+    pub bind: SymBind,
+    pub r#type: SymType,
     pub shndx: SectionIndex,
     pub value: Addr,
     pub size: u64,
