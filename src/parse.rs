@@ -63,8 +63,6 @@ pub enum ErrorKind {
     String(String),
 }
 
-
-
 pub struct Error<I> {
     pub errors: Vec<(I, ErrorKind)>,
 }
