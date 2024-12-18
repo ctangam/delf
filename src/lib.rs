@@ -99,6 +99,8 @@ pub struct File {
     pub entry_point: Addr,
     pub program_headers: Vec<ProgramHeader>,
     pub section_headers: Vec<SectionHeader>,
+
+    pub shstrndx: usize,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -125,6 +127,22 @@ pub enum ReadSymsError {
 
 impl File {
     const MAGIC: &'static [u8] = &[0x7f, 0x45, 0x4c, 0x46];
+
+    pub fn get_section_name<'a>(
+        &self,
+        file_contents: &'a [u8],
+        offset: Addr,
+    ) -> Result<&'a [u8], GetStringError> {
+        use GetStringError as E;
+
+        let tab_start = self.section_headers[self.shstrndx].off + offset;
+        let tab_slice = &file_contents[tab_start.into()..];
+        let string_slice = tab_slice
+            .split(|&c| c == 0)
+            .next()
+            .ok_or(E::StringNotFound)?;
+        Ok(string_slice)
+    }
 
     pub fn get_dynamic_entry(&self, tag: DynamicTag) -> Result<Addr, GetDynamicEntryError> {
         self.dynamic_entry(tag)
@@ -307,6 +325,8 @@ impl File {
             entry_point,
             program_headers,
             section_headers,
+
+            shstrndx: sh_nidx as _,
         };
         Ok((i, res))
     }
