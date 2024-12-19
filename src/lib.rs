@@ -7,12 +7,12 @@ use derive_try_from_primitive::TryFromPrimitive;
 pub struct Addr(pub u64);
 
 impl Addr {
-    pub unsafe fn as_ptr<T>(&self) -> *const T {
-        std::mem::transmute(self.0 as usize)
+    pub fn as_ptr<T>(&self) -> *const T {
+        self.0 as *const T
     }
 
-    pub unsafe fn as_mut_ptr<T>(&self) -> *mut T {
-        std::mem::transmute(self.0 as usize)
+    pub fn as_mut_ptr<T>(&self) -> *mut T {
+        self.0 as *mut T
     }
 
     pub unsafe fn as_slice<T>(&self, len: usize) -> &[T] {
