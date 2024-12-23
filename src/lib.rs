@@ -3,7 +3,7 @@ mod parse;
 use derive_more::{Add, Sub};
 use derive_try_from_primitive::TryFromPrimitive;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Add, Sub, Hash)]
 pub struct Addr(pub u64);
 
 impl Addr {
@@ -528,6 +528,8 @@ pub enum RelType {
     GlobDat = 6,
     JumpSlot = 7,
     Relative = 8,
+    DTPMOD64 = 16,
+    TPOff64 = 18,
     IRelative = 37,
 }
 
@@ -570,7 +572,7 @@ pub enum ReadRelaError {
     DynamicEntryNotFound(#[from] GetDynamicEntryError),
     #[error("Rela segment not found")]
     RelaSegmentNotFound,
-    #[error("Parsing error")]
+    #[error("Parsing error: {0}")]
     ParsingError(String),
 }
 
@@ -592,6 +594,7 @@ pub enum SymType {
     Func = 2,
     Section = 3,
     File = 4,
+    TLS = 6,
     IFunc = 10,
 }
 
